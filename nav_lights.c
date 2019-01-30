@@ -92,7 +92,23 @@ void strobe_animate(void)
   pin_low(&strobe_b);    
 }
 
+/********************************************************************/
+void configure_pins(void)
+{
+  /* Pin setup */
+  pin_init(&strobe_a, B, 2);
+  pin_init(&strobe_b, B, 4);
+  pin_init(&left_wing, B, 1);
+  pin_init(&right_wing, B, 0);
+  pin_init(&data, B, 3);
+  pin_output(&strobe_a);
+  pin_output(&strobe_b);
+  pin_output(&left_wing);
+  pin_output(&right_wing);
+}
+
 bool probe_for_radio(pin_t* data, pin_t* status_light)
+/* Determine if we have a radio connected */
 {
   const uint8_t max_loops = 10;
   bool found = false;
@@ -119,84 +135,82 @@ bool probe_for_radio(pin_t* data, pin_t* status_light)
   return found;
 }
 
-/********************************************************************/
-int main(void)
+void configure_timer_interrupts(void)
+{
+  /* Active TIMER1 with prescaler=16, used for measuring input signal pulse 
+   * width. Input signals are from 760us to 2280us. */
+  set(TCCR1, CS10);
+  set(TCCR1, CS12);
+
+  /* Enable interrupts for PCINT3 (pin B3, the data pin) */
+  set(PCMSK, PCINT3);
+  set(GIMSK, PCIE);
+  sei();
+}
+
+void handle_lights(bool radio_is_connected)
 {
   bool lights_active = false;
   bool lights_requested = false;
   uint8_t pulse_width = 0;
+
+  /* Determine if lights are requested */
+  if (!radio_is_connected)
+    lights_requested = true; // always run the lights if we don't have a radio
+  else    
+  {
+    pulse_width = read_pulse_width();
+    if (pulse_width >= (pulse_width_threshold + deadband))
+      lights_requested = true;
+    else if (pulse_width < pulse_width_threshold)
+      lights_requested = false;
+  }
+
+  /* Handle state transitions */
+  if (!lights_active && lights_requested)
+  {
+    pin_high(&left_wing);
+    pin_high(&right_wing);
+    lights_active = true;
+  }
+  else if (lights_active && !lights_requested)
+  {
+    pin_low(&left_wing);
+    pin_low(&right_wing);
+    lights_active = false;
+  }
+
+  /* Strobe or sleep */
+  if (lights_active)
+  {
+    if (!radio_is_connected)
+    {
+      delay_ms(strobe_off_time);
+      strobe_animate();
+    }
+    else if (monitored_pause(strobe_off_time))
+    {
+      strobe_animate();
+    }
+  }
+  else
+    sleep_mode();
+}
+
+/********************************************************************/
+int main(void)
+{
   bool radio_is_connected;
   
-  /* Pin setup */
-  pin_init(&strobe_a, B, 2);
-  pin_init(&strobe_b, B, 4);
-  pin_init(&left_wing, B, 1);
-  pin_init(&right_wing, B, 0);
-  pin_init(&data, B, 3);
-  pin_output(&strobe_a);
-  pin_output(&strobe_b);
-  pin_output(&left_wing);
-  pin_output(&right_wing);
-
-  /* Determine if we have a radio connected */
+  configure_pins();
   radio_is_connected = probe_for_radio(&data, &left_wing);
+  
   if (radio_is_connected)
-  {
-    /* Active TIMER1 with prescaler=16, used for measuring input signal pulse 
-     * width. Input signals are from 760us to 2280us. */
-    set(TCCR1, CS10);
-    set(TCCR1, CS12);
-
-    /* Enable interrupts for PCINT3 (pin B3, the data pin) */
-    set(PCMSK, PCINT3);
-    set(GIMSK, PCIE);
-    sei();
-  }
+    configure_timer_interrupts();
 
   while (true)
-  {
-    /* Determine if lights are requested */
-    if (!radio_is_connected)
-      lights_requested = true; // always run the lights if we don't have a radio
-    else    
-    {
-      pulse_width = read_pulse_width();
-      if (pulse_width >= (pulse_width_threshold + deadband))
-        lights_requested = true;
-      else if (pulse_width < pulse_width_threshold)
-        lights_requested = false;
-    }
+    handle_lights(radio_is_connected);
 
-    /* Handle state transitions */
-    if (!lights_active && lights_requested)
-    {
-      pin_high(&left_wing);
-      pin_high(&right_wing);
-      lights_active = true;
-    }
-    else if (lights_active && !lights_requested)
-    {
-      pin_low(&left_wing);
-      pin_low(&right_wing);
-      lights_active = false;
-    }
-
-    /* Strobe or sleep */
-    if (lights_active)
-    {
-      if (!radio_is_connected)
-      {
-        delay_ms(strobe_off_time);
-        strobe_animate();
-      }
-      else if (monitored_pause(strobe_off_time))
-      {
-        strobe_animate();
-      }
-    }
-    else
-      sleep_mode();
-  }
   return 0;
 }
 
